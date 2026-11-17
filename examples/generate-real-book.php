@@ -53,8 +53,10 @@ try {
 coloring_worker_start($id);
 echo "Project $id queued, drawing (this takes several minutes)...\n";
 
-$summary = ['ready' => 0, 'failed' => 0];
-for ($pass = 0; $pass < 200 && $summary['ready'] === 0 && $summary['failed'] === 0; $pass++) {
+/* A per-page API hiccup is expected over several minutes of image generation; the worker records it and retries on the next
+   pass, so only `ready` ends the loop. The 200-pass cap and the ready check below still catch a book that truly stalls. */
+$summary = ['ready' => 0];
+for ($pass = 0; $pass < 200 && $summary['ready'] === 0; $pass++) {
     $summary = coloring_worker_run(5);
     echo gmdate('H:i:s'), " advanced={$summary['advanced']} ready={$summary['ready']} failed={$summary['failed']}\n";
 }
