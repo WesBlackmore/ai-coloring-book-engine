@@ -1,0 +1,11 @@
+{
+  "_comment": "Demonstrates: square 8.5 x 8.5 trim, food-and-drink style, and captions (a short name under each picture).",
+  "idea": "Cozy cafe treats like pastries, teapots, coffee cups and fruit tarts, each with its name below",
+  "audience": "adults",
+  "style": "food-and-drink",
+  "page_count": 16,
+  "trim": "square",
+  "captions": true,
+  "cover_template": "minimalist",
+  "palette": "auto"
+}

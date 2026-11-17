@@ -1,0 +1,13 @@
+{
+  "_comment": "Demonstrates: kids audience with an age band, cute-animals style, portrait trim, a recurring character, and a soft-pastel palette.",
+  "idea": "A little green dinosaur hosting a picnic with friends in a sunny meadow",
+  "audience": "kids",
+  "age_band": "4-8",
+  "style": "cute-animals",
+  "page_count": 16,
+  "trim": "portrait",
+  "recurring": true,
+  "character_desc": "a small friendly green dinosaur with round spots",
+  "cover_template": "bubble",
+  "palette": "soft-pastel"
+}
