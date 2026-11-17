@@ -19,7 +19,7 @@ function application_data_directory(): string
 {
     $configured = trim((string) getenv('COLORING_DATA_DIR'));
 
-    return $configured !== '' ? rtrim($configured, '/') : application_data_directory();
+    return $configured !== '' ? rtrim($configured, '/') : dirname(__DIR__) . '/data';
 }
 
 /**
