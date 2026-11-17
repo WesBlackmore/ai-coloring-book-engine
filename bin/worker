@@ -1,0 +1,137 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/*
+ * The queue worker. Adapted from the host app's tools/background-book-worker.php with the ebook side removed.
+ *
+ *   bin/worker [--once] [--limit=1..50] [--loop-seconds=0..3300] [--lock-file=PATH]
+ *
+ * One pass advances up to --limit units of work (plan, a run of pages, cover, outline, finish) and pre-renders the interior
+ * PDF of a finished book. With --loop-seconds it repeats every minute, and at once when a book is queued (wake file).
+ * Cron example:  * * * * * flock -n ~/.config/coloring-engine.lock php /path/to/bin/worker --limit=20 --loop-seconds=3300
+ */
+
+if (PHP_SAPI !== 'cli') exit(1);
+
+require_once dirname(__DIR__) . '/src/coloring_worker.php';
+require_once dirname(__DIR__) . '/src/coloring_pdf_cache.php';
+require_once dirname(__DIR__) . '/src/background_book_worker_loop.php';
+require_once dirname(__DIR__) . '/src/background_worker_wake.php';
+
+$limit = 20;
+$loopSeconds = 0;
+$lockFile = null;
+foreach (array_slice($argv, 1) as $argument) {
+    if ($argument === '--once') {
+        $limit = 1;
+    } elseif (str_starts_with($argument, '--limit=')) {
+        $limit = max(1, min(50, (int) substr($argument, strlen('--limit='))));
+    } elseif (str_starts_with($argument, '--loop-seconds=')) {
+        $loopSeconds = background_book_worker_parse_loop_seconds(substr($argument, strlen('--loop-seconds=')));
+        if ($loopSeconds === null) {
+            fwrite(STDERR, "worker: --loop-seconds must be a whole number from 0 to 3300\n");
+            exit(1);
+        }
+    } elseif (str_starts_with($argument, '--lock-file=')) {
+        $lockFile = substr($argument, strlen('--lock-file='));
+    } else {
+        fwrite(STDERR, "Usage: bin/worker [--once] [--limit=1..50] [--loop-seconds=0..3300] [--lock-file=PATH]\n");
+        exit(1);
+    }
+}
+
+/* D-649: a pass spawned by a book start takes the cron line's lock itself, so it and a cron loop never run passes at once. */
+if ($lockFile !== null) {
+    $lockHandle = @fopen($lockFile, 'c');
+    if ($lockHandle === false || !flock($lockHandle, LOCK_EX | LOCK_NB)) {
+        printf("%s worker: lock %s, not starting\n", gmdate('c'), $lockHandle === false ? 'cannot be opened' : 'held by another worker');
+        exit(0);
+    }
+}
+
+/** One pass: run the queue, then render the PDF of a finished book. Prints the per-pass log line. */
+$runPass = static function () use ($limit): array {
+    $started = microtime(true);
+    $result = coloring_worker_run($limit);
+    $pdfs = 0;
+    try {
+        $pdfs = coloring_pdf_prerender_run(1);
+    } catch (Throwable $exception) {
+        app_diagnostic_log($exception, ['area' => 'coloring_pdf_prerender_run']);
+    }
+    printf("%s worker: advanced=%d ready=%d failed=%d stalled=%d pdfs=%d %.1fs\n", gmdate('c'), $result['advanced'], $result['ready'],
+        $result['failed'], $result['stalled'], $pdfs, microtime(true) - $started);
+
+    return $result;
+};
+
+if ($loopSeconds === 0) {
+    /* A spawned pass (--lock-file) runs again, up to 3 more times, while the wake file moved or a book is due. */
+    $wakeFile = background_worker_signal_path('wake');
+    $seen = 0;
+    $failed = false;
+    try {
+        background_book_worker_drain(
+            static function () use ($runPass, $wakeFile, &$seen, &$failed): void {
+                static $first = true;
+                if (!$first) db_reset();
+                $first = false;
+                $seen = background_book_worker_wake_mark($wakeFile);
+                $failed = $runPass()['failed'] > 0 || $failed;
+            },
+            static function () use ($lockFile, $wakeFile, &$seen): bool {
+                if ($lockFile === null) return false;
+                if (background_book_worker_wake_mark($wakeFile) !== $seen) return true;
+                try {
+                    return coloring_worker_next_project() !== null;
+                } catch (Throwable) {
+                    return false;
+                }
+            }
+        );
+    } catch (Throwable $exception) {
+        fwrite(STDERR, 'worker: ' . $exception->getMessage() . PHP_EOL);
+        exit(1);
+    }
+    exit($failed ? 1 : 0);
+}
+
+/* Loop mode: SIGTERM or SIGINT end it after the current pass. Each pass drops the cached connection so no WAL snapshot carries over. */
+$stopRequested = false;
+if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
+    pcntl_async_signals(true);
+    foreach ([SIGTERM, SIGINT] as $signal) {
+        pcntl_signal($signal, static function () use (&$stopRequested): void {
+            $stopRequested = true;
+        });
+    }
+}
+if (function_exists('set_time_limit')) set_time_limit(0);
+printf("%s worker: loop started, %d seconds\n", gmdate('c'), $loopSeconds);
+$loop = background_book_worker_loop(
+    $loopSeconds,
+    static function () use ($runPass): void {
+        /* src/ai.php re-arms a time limit per AI call and leaves it armed, so clear it every pass. */
+        if (function_exists('set_time_limit')) set_time_limit(0);
+        background_worker_heartbeat();
+        db_reset();
+        $runPass();
+    },
+    static function (float $seconds): void {
+        usleep((int) round($seconds * 1000000));
+    },
+    static fn (): float => hrtime(true) / 1e9,
+    background_book_worker_loop_interval(),
+    static function () use (&$stopRequested): bool {
+        return $stopRequested;
+    },
+    null,
+    background_worker_signal_path('wake')
+);
+if ($loop['restart']) printf("%s worker: code changed, restarting\n", gmdate('c'));
+printf("%s worker: loop ended after %d passes, %d threw, peak memory %.1f MB\n", gmdate('c'), $loop['passes'], $loop['failed'],
+    memory_get_peak_usage(true) / 1048576);
+
+exit($loop['exit']);

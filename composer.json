@@ -1,0 +1,11 @@
+{
+    "require": {
+        "dompdf/dompdf": "^3.1"
+    },
+    "config": {
+        "platform": {
+            "php": "8.2.34"
+        }
+    },
+    "license": ["proprietary"]
+}

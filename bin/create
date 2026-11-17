@@ -1,0 +1,52 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/*
+ * Create a coloring book from a spec and queue it. Prints the project id.
+ *
+ *   bin/create --idea "A dinosaur picnic with friends" --audience kids [--age-band 4-8] [--style cute-animals]
+ *              [--pages 16|24|30] [--trim portrait|square] [--cover-template auto] [--palette auto]
+ *              [--character "a small green dinosaur"] [--captions] [--owner-ref order-123] [--no-start]
+ *   bin/create --spec book.json [--owner-ref order-123]    (keys: idea, style, audience, age_band, mood, occasion,
+ *                                                            page_count, recurring, character_desc, captions, trim,
+ *                                                            cover_template, palette)
+ *
+ * Needs OPENAI_API_KEY at worker time, not here. Run bin/worker to draw the book.
+ */
+
+if (PHP_SAPI !== 'cli') exit(1);
+
+require_once dirname(__DIR__) . '/src/coloring_worker.php';
+
+$options = getopt('', ['idea:', 'audience:', 'age-band:', 'style:', 'pages:', 'trim:', 'cover-template:', 'palette:', 'character:',
+    'captions', 'owner-ref:', 'spec:', 'no-start', 'help']);
+if ($options === false || isset($options['help']) || ($options === [])) {
+    fwrite(STDERR, "Usage: bin/create --idea TEXT --audience kids|teens|adults [options] | --spec FILE.json  (see the file header)\n");
+    exit(isset($options['help']) ? 0 : 1);
+}
+
+if (isset($options['spec'])) {
+    $spec = json_decode((string) @file_get_contents((string) $options['spec']), true);
+    if (!is_array($spec)) {
+        fwrite(STDERR, "bin/create: cannot read a JSON object from {$options['spec']}\n");
+        exit(1);
+    }
+} else {
+    $spec = ['idea' => $options['idea'] ?? '', 'audience' => $options['audience'] ?? '', 'age_band' => $options['age-band'] ?? null,
+        'style' => $options['style'] ?? '', 'page_count' => $options['pages'] ?? '', 'trim' => $options['trim'] ?? 'portrait',
+        'cover_template' => $options['cover-template'] ?? 'auto', 'palette' => $options['palette'] ?? 'auto',
+        'captions' => isset($options['captions'])];
+    if (isset($options['character'])) $spec += ['recurring' => true, 'character_desc' => $options['character']];
+}
+
+try {
+    $values = coloring_validate($spec);
+    $id = coloring_create_project(isset($options['owner-ref']) ? (string) $options['owner-ref'] : null, $values);
+    if (!isset($options['no-start'])) coloring_worker_start($id);
+} catch (InvalidArgumentException $exception) {
+    fwrite(STDERR, 'bin/create: ' . $exception->getMessage() . "\n");
+    exit(1);
+}
+echo $id, "\n";
